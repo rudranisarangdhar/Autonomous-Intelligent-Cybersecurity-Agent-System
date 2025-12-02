@@ -49,6 +49,10 @@ class AutoResponseAgent:
         self.logfile = logfile
 
     def respond(self, df):
+        """
+        Default rule-based actions (keeps existing behavior).
+        RL will be able to override later by calling apply_action per row.
+        """
         actions = []
         logs = []
         for _, row in df.iterrows():
@@ -61,11 +65,36 @@ class AutoResponseAgent:
             else:
                 action = "NO ACTION"
             actions.append(action)
-            logs.append(f"{datetime.datetime.now()} | {action} | {row.to_dict()}\\n")
+            logs.append(f"{datetime.datetime.now()} | {action} | {row.to_dict()}\n")
         df["action"] = actions
         with open(self.logfile, "a", encoding="utf-8") as f:
             f.writelines(logs)
         return df
+
+    def apply_action(self, row, action_str):
+        """
+        Called by RL agent to perform/record a selected action.
+        This function should implement the real effect (block IP, alert, etc).
+        For safety, we only log actions here. You can expand to call firewall commands.
+        Return a dict describing what was done.
+        """
+        now = datetime.datetime.now()
+        src_ip = row.get("src_ip", row.get("top_ip", "unknown_ip"))
+        entry = f"{now} | ACTION({action_str}) | src_ip={src_ip} | row_pred={row.get('pred')} | severity={row.get('severity')}\n"
+        with open(self.logfile, "a", encoding="utf-8") as f:
+            f.write(entry)
+
+        # Simulated effect: return a simple result
+        result = {
+            "action": action_str,
+            "src_ip": src_ip,
+            "timestamp": str(now),
+            "note": "logged (no real block executed)"
+        }
+
+        # If you want to actually block an IP (risky), implement system command here
+        # e.g. call firewall or iptables (NOT recommended without admin safety checks)
+        return result
 
 class SelfEvolvingAgent:
     def __init__(self, threshold=0.85):

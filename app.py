@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import numpy as np
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from rl_agent import RLAgent
+
 
 # Multi-agent imports
 from agents import (
@@ -279,6 +281,10 @@ intel = ThreatIntelAgent()
 resp = AutoResponseAgent()
 evo = SelfEvolvingAgent()
 monitor = SystemMonitorAgent()
+# Initialize RL decision agent (loads existing q_table if present)
+rl = RLAgent(actions=["ignore", "log_only", "alert_admin", "block_ip", "increase_monitoring"],
+             alpha=0.2, gamma=0.9, epsilon=0.12, qfile="q_table.json")
+
 
 # ================================================================
 # FILE UPLOAD + UNIVERSAL CONVERSION
@@ -299,6 +305,48 @@ if uploaded and det is not None:
 
     st.subheader("🔍 Converted & Analyzed Data")
     st.dataframe(df)
+
+        # -------- RL integration: choose action per row and update Q-table --------
+    # We will iterate rows and let RL choose an action; then call resp.apply_action to log/apply it
+    rl_updates = 0
+    for idx, row in df.iterrows():
+        # build state from row using RL helper
+        state = rl.row_to_state(row)
+
+        # RL selects action
+        action_idx = rl.choose_action(state)
+        action = rl.actions[action_idx]
+
+        # Map RL action strings to AutoResponse actions (you might want to standardize texts)
+        # We'll use simple mapping so it fits with your 'action' column
+        action_map = {
+            "ignore": "NO ACTION",
+            "log_only": "LOG ONLY",
+            "alert_admin": "ALERT ADMIN",
+            "block_ip": "BLOCK SOURCE IP",
+            "increase_monitoring": "INCREASE MONITORING"
+        }
+        mapped_action = action_map.get(action, action)
+
+        # APPLY action via AutoResponseAgent (this logs it)
+        result = resp.apply_action(row, action)
+
+        # update DataFrame action column (override default rule-based action if desired)
+        df.at[idx, "action"] = mapped_action
+
+        # compute reward and update rl
+        reward = rl.reward_from_transition(row.to_dict(), action, None)
+        next_state = state  # simple on-line update (no complex env). Could use future row info.
+        rl.update(state, action_idx, reward, next_state)
+        rl_updates += 1
+
+    # persist after batch updates (or periodically)
+    if rl_updates:
+        rl.save()
+
+    st.subheader("🔍 Converted & Analyzed Data (after RL actions)")
+    st.dataframe(df)
+
 
     # Self-evolving model
     accuracy = 1 - abs(df["pred"] - df.get("label", df["pred"])).mean()
@@ -363,3 +411,25 @@ if start:
         if stop_btn:
             st.success("🛑 Monitoring stopped.")
             break
+
+
+st.subheader("🔧 RL Agent Controls")
+col1, col2, col3 = st.columns([1,1,1])
+with col1:
+    if st.button("Export RL policy (txt)"):
+        rl.export_policy("rl_policy.txt")
+        with open("rl_policy.txt","rb") as f:
+            st.download_button("Download Policy", f, file_name="rl_policy.txt")
+with col2:
+    if st.button("Save Q-table now"):
+        rl.save()
+        st.success("Q-table saved.")
+with col3:
+    if st.button("Reset Q-table"):
+        # backup then reset
+        if os.path.exists(rl.qfile):
+            os.rename(rl.qfile, rl.qfile + ".backup")
+        rl.q = {}
+        rl.save()
+        st.warning("Q-table reset (backup saved).")
+
